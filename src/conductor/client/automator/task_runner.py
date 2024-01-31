@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import traceback
+from multiprocessing import Value
 
 from conductor.client.configuration.configuration import Configuration
 from conductor.client.configuration.settings.metrics_settings import MetricsSettings
@@ -27,12 +28,17 @@ class TaskRunner:
             self,
             worker: WorkerInterface,
             configuration: Configuration = None,
-            metrics_settings: MetricsSettings = None
+            metrics_settings: MetricsSettings = None,
+            running_processes: Value = None,
+            graceful_shutdown: Value = None
     ):
         if not isinstance(worker, WorkerInterface):
             raise Exception('Invalid worker')
         self.worker = worker
         self.__set_worker_properties()
+        logger.info(f'CONSTRUCTOR: running_processes is {running_processes} with value {running_processes.value}')
+        self.running_processes = running_processes
+        self.graceful_shutdown = graceful_shutdown
         if not isinstance(configuration, Configuration):
             configuration = Configuration()
         self.configuration = configuration
@@ -57,11 +63,16 @@ class TaskRunner:
         logger.info(f'Polling task {task_names} with domain {self.worker.get_domain()} with polling '
                     f'interval {self.worker.get_polling_interval_in_seconds()}')
 
-        while True:
+        while self.graceful_shutdown is None or self.graceful_shutdown.value == 0:
+            logger.info(f'Gracefully shutdown value is {self.graceful_shutdown}')
             try:
                 self.run_once()
             except Exception as e:
-                pass
+                logger.info(f'Exception task_runner: {e.__class__.__name__}')
+            except KeyboardInterrupt:
+                logger.info(f'Keyboard interrupt task_runner: {e.__class__.__name__}')
+        logger.info(f'Finished run with gracefully shutdown: {self.graceful_shutdown}!')
+        self.running_processes.value -= 1
 
     def run_once(self) -> None:
         task = self.__poll_task()
@@ -98,7 +109,8 @@ class TaskRunner:
             if auth_exception.invalid_token:
                 logger.fatal(f'failed to poll task {task_definition_name} due to invalid auth token')
             else:
-                logger.fatal(f'failed to poll task {task_definition_name} error: {auth_exception.status} - {auth_exception.error_code}')
+                logger.fatal(
+                    f'failed to poll task {task_definition_name} error: {auth_exception.status} - {auth_exception.error_code}')
             return None
         except Exception as e:
             if self.metrics_collector is not None:

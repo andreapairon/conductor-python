@@ -1,7 +1,8 @@
 import importlib
 import logging
 import os
-from multiprocessing import Process, freeze_support, Queue, set_start_method, get_context
+import time
+from multiprocessing import Process, freeze_support, Queue, set_start_method, get_context, Value
 from sys import platform
 from typing import List
 
@@ -87,6 +88,22 @@ class TaskHandler:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        logger.info(f"__exit__ running (before stop processes)")
+        self.stop_processes()
+
+    def gracefully_shutdown(self):
+        logger.debug(f'Gracefully shutting-down...')
+        self.graceful_shutdown.value = 1
+        while self.running_processes.value != 0:
+            logger.info(f"trying to gracefully shutdown, but running processes value is {self.running_processes}")
+            time.sleep(1)
+        for process in self.task_runner_processes:
+            try:
+                logger.info(f"after end, process status is {process.is_alive()}")
+            except Exception as e:
+                logger.debug(f'gracefully_shutdown-method - Failed to terminate process: {process.pid}, reason: {e}')
+
+        logger.info(f"gracefully shutdown: calling stop processes")
         self.stop_processes()
 
     def stop_processes(self) -> None:
@@ -129,6 +146,8 @@ class TaskHandler:
             metrics_settings: MetricsSettings
     ) -> None:
         self.task_runner_processes = []
+        self.graceful_shutdown: Value = Value('i', 0)
+        self.running_processes: Value = Value('i', len(workers))
         for worker in workers:
             self.__create_task_runner_process(
                 worker, configuration, metrics_settings
@@ -140,7 +159,8 @@ class TaskHandler:
             configuration: Configuration,
             metrics_settings: MetricsSettings
     ) -> None:
-        task_runner = TaskRunner(worker, configuration, metrics_settings)
+        task_runner = TaskRunner(worker, configuration, metrics_settings, running_processes=self.running_processes,
+                                 graceful_shutdown=self.graceful_shutdown)
         process = Process(target=task_runner.run)
         self.task_runner_processes.append(process)
 
@@ -165,7 +185,12 @@ class TaskHandler:
 
     def __join_task_runner_processes(self):
         for task_runner_process in self.task_runner_processes:
-            task_runner_process.join()
+            try:
+                logger.info('Joining process...')
+                task_runner_process.join()
+                logger.info('Ended join!')
+            except KeyboardInterrupt:
+                logger.info(f"Keyboard interrupt for pid")
         logger.info('Joined TaskRunner processes')
 
     def __stop_metrics_provider_process(self):
