@@ -88,23 +88,26 @@ class TaskHandler:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        logger.info(f"__exit__ running (before stop processes)")
-        self.stop_processes()
+        if self.graceful_shutdown.value == 0:
+            self.stop_processes()
 
     def gracefully_shutdown(self):
         logger.debug(f'Gracefully shutting-down...')
-        self.graceful_shutdown.value = 1
-        while self.running_processes.value != 0:
-            logger.info(f"trying to gracefully shutdown, but running processes value is {self.running_processes}")
-            time.sleep(1)
-        for process in self.task_runner_processes:
-            try:
-                logger.info(f"after end, process status is {process.is_alive()}")
-            except Exception as e:
-                logger.debug(f'gracefully_shutdown-method - Failed to terminate process: {process.pid}, reason: {e}')
+        if self.graceful_shutdown.value == 1:
+            logger.info("Already shut down earlier by another received signal.")
+        else:
+            self.graceful_shutdown.value = 1
+            while self.running_processes.value != 0:
+                logger.info(f"trying to gracefully shutdown, but running processes value is {self.running_processes}")
+                time.sleep(1)
+            for process in self.task_runner_processes:
+                try:
+                    logger.info(f"after end, process status is {process.is_alive()}")
+                except Exception as e:
+                    logger.debug(f'gracefully_shutdown-method - Failed to terminate process: {process.pid}, reason: {e}')
 
-        logger.info(f"gracefully shutdown: calling stop processes")
-        self.stop_processes()
+            logger.info(f"gracefully shutdown: calling stop processes")
+            self.stop_processes()
 
     def stop_processes(self) -> None:
         self.__stop_task_runner_processes()
